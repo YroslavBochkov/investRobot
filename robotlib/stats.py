@@ -66,6 +66,8 @@ class TradeStatisticsAnalyzer:
         return [trade for trade in self.trades.values() if trade.execution_report_status in self.PENDING_ORDER_STATUSES]
 
     def save_to_file(self, filename: str) -> None:
+        import os
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, 'wb') as file:
             pickle.dump(obj=self, file=file, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -110,6 +112,19 @@ class TradeStatisticsAnalyzer:
                    calculators: list[TradeStatisticsCalculatorBase] = None)\
             -> tuple[dict[str, any], pd.DataFrame]:
         df = pd.DataFrame(map(asdict, self.trades.values()))  # pylint:disable=invalid-name
+
+        # Если нет ни одной сделки — возвращаем пустой отчет
+        if df.empty:
+            stats = {
+                'final_balance': 0.0,
+                'max_loss': 0.0,
+                'final_instrument_balance': 0,
+                'income': 0.0,
+                'total_commission': 0.0
+            }
+            return stats, df
+
+        # Далее — прежняя обработка
         df['average_position_price'] = df['average_position_price'].apply(lambda x: x['units'] + x['nano'] / (10 ** 9))
         df['total_order_amount'] = df['total_order_amount'].apply(lambda x: x['units'] + x['nano'] / (10 ** 9))
         df['sign'] = 3 - df['direction'] * 2
@@ -148,9 +163,21 @@ class BalanceCalculator(TradeStatisticsCalculatorBase):  # pylint:disable=too-fe
         final_balance = df['balance'][len(df) - 1]
         final_instrument_balance = df['instrument_balance'][len(df) - 1]
         final_price = df['average_position_price'][len(df) - 1]
+        # Учёт комиссии: комиссия Тинькофф 0.03% за сделку (0.0003), минимум 0.01 руб.
+        commission_rate = 0.0005
+        commission_min = 0.01
+        total_commission = 0.0
+        # Считаем комиссию только по исполненным сделкам (EXECUTION_REPORT_STATUS_FILL)
+        if 'execution_report_status' in df:
+            for idx, row in df.iterrows():
+                if str(row['execution_report_status']) == "1":  # EXECUTION_REPORT_STATUS_FILL
+                    commission = max(abs(row['total_order_amount']) * commission_rate, commission_min)
+                    total_commission += commission
+        income = final_balance + final_instrument_balance * final_price - total_commission
         return {
             'final_balance': final_balance,
             'max_loss': -df['balance'].min(),
             'final_instrument_balance': final_instrument_balance,
-            'income': final_balance + final_instrument_balance * final_price
+            'income': income,
+            'total_commission': total_commission
         }

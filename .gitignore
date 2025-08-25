@@ -1,4 +1,3 @@
-
 # Created by https://www.toptal.com/developers/gitignore/api/python,pycharm+all,virtualenv,macos
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,pycharm+all,virtualenv,macos
 
@@ -298,3 +297,107 @@ pyvenv.cfg
 pip-selfcheck.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,pycharm+all,virtualenv,macos
+
+=======
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+# Anaconda/Miniconda environments
+conda/
+conda_env/
+*.conda
+*.env
+*.envs
+*.condarc
+*.conda_lock
+*.conda_env
+*.yml
+*.yaml
+# Common conda environment folders
+.conda/
+.envs/
+
+# IDEs
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Build, dist, eggs
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Logs, coverage, test
+*.log
+.coverage
+.cache
+.tox/
+.nox/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# Jupyter/IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Rope, Spyder, PyBuilder
+.ropeproject
+.spyderproject
+.spyproject
+.pybuilder/
+target/
+
+# Sphinx docs
+docs/_build/
+
+# mkdocs
+/site
+
+# Data, DB, local settings
+db.sqlite3
+db.sqlite3-journal
+local_settings.py
+
+# Others
+*.mo
+*.pot
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+celerybeat-schedule
+celerybeat.pid
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Matplotlib cache
+.matplotlib/
+
+# Project stats and results
+stats.pickle
+stats_tcsg.pickle
+backtest_stats.pickle

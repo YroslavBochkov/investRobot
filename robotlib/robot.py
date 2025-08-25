@@ -102,7 +102,7 @@ class TradingRobot:  # pylint:disable=too-many-instance-attributes
                     self.logger.debug(f'Received market_data {market_data}')
                     if market_data.candle:
                         self._on_update(client, market_data)
-                    if market_data.trading_status and market_data.trading_status.market_order_available_flag:
+                    if market_data.trading_status and not market_data.trading_status.market_order_available_flag:
                         self.logger.info(f'Trading is limited. Current status: {market_data.trading_status}')
                         break
             except InvestError as error:
@@ -316,7 +316,10 @@ class TradingRobotFactory:
     def _get_current_postitions(self) -> tuple[Money, int]:
         # amount of money and instrument balance
         with Client(self.token, app_name=self.APP_NAME) as client:
-            positions = client.operations.get_positions(account_id=self.account_id)
+            if self.sandbox_mode:
+                positions = client.sandbox.get_sandbox_positions(account_id=self.account_id)
+            else:
+                positions = client.operations.get_positions(account_id=self.account_id)
 
             instruments = [sec for sec in positions.securities if sec.figi == self.instrument_info.figi]
             if len(instruments) > 0:
@@ -336,11 +339,13 @@ class TradingRobotFactory:
     def _validate_account(token: str, account_id: str, logger: logging.Logger) -> bool:
         try:
             with Client(token, app_name=TradingRobotFactory.APP_NAME) as client:
-                accounts = [acc for acc in client.users.get_accounts().accounts if acc.id == account_id]
-                sandbox_mode = False
+                # Сначала пробуем песочницу
+                accounts = [acc for acc in client.sandbox.get_sandbox_accounts().accounts if acc.id == account_id]
+                sandbox_mode = True
                 if len(accounts) == 0:
-                    sandbox_mode = True
-                    accounts = [acc for acc in client.sandbox.get_sandbox_accounts().accounts if acc.id == account_id]
+                    # Если не нашли — пробуем боевой контур
+                    sandbox_mode = False
+                    accounts = [acc for acc in client.users.get_accounts().accounts if acc.id == account_id]
                     if len(accounts) == 0:
                         logger.error(f'Account {account_id} not found.')
                         raise ValueError('Account not found')
