@@ -327,6 +327,14 @@ conda_env/
 .conda/
 .envs/
 
+# Не добавлять большие установщики и архивы
+Miniconda3-latest-*.sh
+*.tar
+*.tar.gz
+*.zip
+*.7z
+*.rar
+
 # IDEs
 .idea/
 .vscode/
