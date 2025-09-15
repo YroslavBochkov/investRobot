@@ -51,11 +51,11 @@ def main():
         pass
 
     strategy = RSIStrategy(
-        rsi_len=21,
-        trade_count=5,
-        min_range=0.002,
-        take_profit=0.007,
-        stop_loss=0.005,
+        rsi_len=21,              # Оптимальный период RSI для минутных свечей
+        trade_count=5,           # 5 лотов за сделку, если хватает баланса
+        min_range=0.0015,        # Фильтр по волатильности, чтобы не ловить "пилу"
+        take_profit=0.01,        # 1% профит — сделки реже, но прибыльнее
+        stop_loss=0.006,         # 0.6% стоп-лосс — не выбивает по шуму
         # visualizer=Visualizer('SBER', 'RUB')
     )
     if entry_price is not None:

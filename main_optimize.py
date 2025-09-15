@@ -17,11 +17,11 @@ def test_rsi_for_ticker(ticker, label):
 
     for rsi_len in [14, 21, 28]:
         for min_range in [0.001, 0.002]:
-            for take_profit in [0.007, 0.01]:
-                for stop_loss in [0.003, 0.005]:
+            for take_profit in [0.007, 0.01, 0.012, 0.015, 0.018, 0.02]:
+                for stop_loss in [0.003, 0.005, 0.007, 0.009, 0.01]:
                     strategy = RSIStrategy(
                         rsi_len=rsi_len,
-                        trade_count=1,
+                        trade_count=2,
                         min_range=min_range,
                         take_profit=take_profit,
                         stop_loss=stop_loss
@@ -42,8 +42,17 @@ def test_rsi_for_ticker(ticker, label):
     print(f"RSI={best_params[0]}, min_range={best_params[1]}, TP={best_params[2]}, SL={best_params[3]} => income={best_income:.2f}")
 
 def main():
-    test_rsi_for_ticker('SBER', 'SBER')
-    test_rsi_for_ticker('T', 'Тинькофф Инвестиции (T)')
+    tickers = [
+        ('MTSS', 'МТС'),
+        ('MOEX', 'Мосбиржа'),
+        ('VKCO', 'ВКонтакте'),
+        ('OZON', 'Озон'),
+    ]
+    for ticker, label in tickers:
+        try:
+            test_rsi_for_ticker(ticker, label)
+        except Exception as e:
+            print(f"\n❌ Ошибка при тестировании {label} ({ticker}): {e}\n")
 
 if __name__ == '__main__':
     main()

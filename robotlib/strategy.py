@@ -79,7 +79,10 @@ class TradeStrategyBase(ABC):
     @abstractmethod
     def decide(self, market_data: MarketDataResponse, params: TradeStrategyParams) -> StrategyDecision:
         if market_data.candle:
-            return self.decide_by_candle(market_data.candle, params)
+            result = self.decide_by_candle(market_data.candle, params)
+            if result is None:
+                return StrategyDecision()
+            return result
         return StrategyDecision()
 
     @abstractmethod
@@ -99,7 +102,10 @@ class RandomStrategy(TradeStrategyBase):
         self.high = high
 
     def decide(self, market_data: MarketDataResponse, params: TradeStrategyParams) -> StrategyDecision:
-        return self.decide_by_candle(market_data.candle, params)
+        result = self.decide_by_candle(market_data.candle, params)
+        if result is None:
+            return StrategyDecision()
+        return result
 
     def decide_by_candle(self, candle: Candle | HistoricCandle, params: TradeStrategyParams) -> StrategyDecision:
         low = max(self.low, -params.instrument_balance)
@@ -145,49 +151,91 @@ class MAEStrategy(TradeStrategyBase):
         self.prev_sign = self._short_avg() > self._long_avg()
 
     def decide(self, market_data: MarketDataResponse, params: TradeStrategyParams) -> StrategyDecision:
-        return self.decide_by_candle(market_data.candle, params)
+        result = self.decide_by_candle(market_data.candle, params)
+        if result is None:
+            return StrategyDecision()
+        return result
 
     def decide_by_candle(self, candle: Candle | HistoricCandle, params: TradeStrategyParams) -> StrategyDecision:
-        time: datetime = candle.time.replace(second=0, microsecond=0)
-        order: RobotTradeOrder | None = None
-        # Добавляем цену в историю для расчёта средних
-        self.prices[time] = Money(candle.close)
-        # Делаем сделки только если накоплено достаточно данных
-        if len(self.prices) >= self.long_len:
-            short_avg = self._short_avg()
-            long_avg = self._long_avg()
-            min_diff = 0.1  # минимальная разница между средними для сигнала
-            sign = short_avg > long_avg
-            # Фильтр: не торгуем, если разница между средними слишком мала
-            if abs(short_avg - long_avg) < min_diff:
+        import pytz
+        msk = pytz.timezone('Europe/Moscow')
+        msk_time = candle.time.astimezone(msk)
+        price = float(candle.close.units + candle.close.nano / 1e9)
+        self.prices.append(price)
+        if len(self.prices) > self.rsi_len + 1:
+            self.prices.pop(0)
+        order = None
+        if len(self.prices) == self.rsi_len + 1:
+            # Фильтр по волатильности: не торгуем, если диапазон слишком мал
+            max_price = max(self.prices)
+            min_price = min(self.prices)
+            if (max_price - min_price) / price < self.min_range:
                 if self.visualizer:
-                    self.visualizer.add_price(time, Money(candle.close).to_float())
+                    self.visualizer.add_candle(
+                        msk_time,
+                        float(candle.open.units + candle.open.nano / 1e9),
+                        float(candle.high.units + candle.high.nano / 1e9),
+                        float(candle.low.units + candle.low.nano / 1e9),
+                        float(candle.close.units + candle.close.nano / 1e9)
+                    )
                     self.visualizer.update_plot()
                 return StrategyDecision(robot_trade_order=None)
-            # Покупка: короткая пересекает длинную снизу вверх
-            if sign and not self.prev_sign:
-                # ФИЛЬТР: не покупать, если уже есть позиция
-                if params.instrument_balance == 0:
-                    lot_price = Money(candle.close).to_float() * self.instrument_info.lot
-                    lots_available = int(params.currency_balance / lot_price)
-                    if lots_available > 0:
-                        order = RobotTradeOrder(quantity=min(self.trade_count, lots_available),
-                                                direction=OrderDirection.ORDER_DIRECTION_BUY)
-                        if self.visualizer:
-                            self.visualizer.add_buy(time)
-            # Продажа: короткая пересекает длинную сверху вниз
-            elif not sign and self.prev_sign:
-                # ФИЛЬТР: не продавать, если позиции нет
-                if params.instrument_balance > 0:
+            rsi = self._calc_rsi(self.prices)
+            # Комиссия Тинькофф 0.05% за сделку, минимум 0.01 руб. (двойная комиссия: покупка+продажа)
+            commission_rate = 0.0005
+            commission_min = 0.01
+            lot_price = price * self.instrument_info.lot
+            # Если есть позиция, считаем относительную комиссию от цены входа
+            min_commission_rel = 0
+            if self.entry_price:
+                min_commission = max(lot_price * commission_rate, commission_min) * 2
+                min_commission_rel = min_commission / (self.entry_price * self.instrument_info.lot)
+            # Покупка по RSI < 25, если нет позиции
+            if rsi < 25 and params.instrument_balance == 0:
+                lot_price = price * self.instrument_info.lot
+                lots_available = int(params.currency_balance / lot_price)
+                if lots_available > 0:
+                    order = RobotTradeOrder(quantity=min(self.trade_count, lots_available),
+                                            direction=OrderDirection.ORDER_DIRECTION_BUY)
+                    self.entry_price = price  # Запоминаем цену входа
+                    if self.visualizer:
+                        self.visualizer.add_buy(msk_time)
+            # Продажа по RSI > 75, если есть позиция
+            elif rsi > 75 and params.instrument_balance > 0:
+                # Продаём только если цена выросла минимум на комиссию
+                if self.entry_price is not None and (price - self.entry_price) / self.entry_price >= min_commission_rel:
                     order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
                                             direction=OrderDirection.ORDER_DIRECTION_SELL)
+                    self.entry_price = None  # Сбросить цену входа
                     if self.visualizer:
-                        self.visualizer.add_sell(time)
-            self.prev_sign = sign
+                        self.visualizer.add_sell(msk_time)
+            # Take-profit/Stop-loss: если есть позиция и цена ушла достаточно далеко
+            elif params.instrument_balance > 0 and self.entry_price is not None:
+                price_change = (price - self.entry_price) / self.entry_price
+                # Продаём только если take_profit перекрывает комиссию
+                if price_change >= max(self.take_profit, min_commission_rel):
+                    # Take-profit
+                    order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
+                                            direction=OrderDirection.ORDER_DIRECTION_SELL)
+                    self.entry_price = None
+                    if self.visualizer:
+                        self.visualizer.add_sell(msk_time)
+                elif price_change <= -self.stop_loss:
+                    # Stop-loss (убыток перекрыть не получится, но фиксируем)
+                    order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
+                                            direction=OrderDirection.ORDER_DIRECTION_SELL)
+                    self.entry_price = None
+                    if self.visualizer:
+                        self.visualizer.add_sell(msk_time)
         if self.visualizer:
-            self.visualizer.add_price(time, Money(candle.close).to_float())
+            self.visualizer.add_candle(
+                msk_time,
+                float(candle.open.units + candle.open.nano / 1e9),
+                float(candle.high.units + candle.high.nano / 1e9),
+                float(candle.low.units + candle.low.nano / 1e9),
+                float(candle.close.units + candle.close.nano / 1e9)
+            )
             self.visualizer.update_plot()
-
         return StrategyDecision(robot_trade_order=order)
 
     def get_prices_list(self) -> list[Money]:
@@ -225,7 +273,10 @@ class BreakoutStrategy(TradeStrategyBase):
         self.prices = [float(candle.close.units + candle.close.nano / 1e9) for candle in candles[-self.window:]]
 
     def decide(self, market_data: MarketDataResponse, params: TradeStrategyParams) -> StrategyDecision:
-        return self.decide_by_candle(market_data.candle, params)
+        result = self.decide_by_candle(market_data.candle, params)
+        if result is None:
+            return StrategyDecision()
+        return result
 
     def decide_by_candle(self, candle: Candle | HistoricCandle, params: TradeStrategyParams) -> StrategyDecision:
         import pytz
@@ -272,18 +323,22 @@ class BreakoutStrategy(TradeStrategyBase):
             # Take-profit/Stop-loss: если есть позиция и цена ушла достаточно далеко
             elif params.instrument_balance > 0 and self.entry_price is not None:
                 price_change = (price - self.entry_price) / self.entry_price
-                if price_change >= self.take_profit:
+                # Продаём только если take_profit перекрывает комиссию
+                if price_change >= max(self.take_profit, min_commission_rel):
                     # Take-profit
                     order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
                                             direction=OrderDirection.ORDER_DIRECTION_SELL)
-                    self.entry_price = None
+                    # Сбрасываем entry_price только если позиция полностью закрыта
+                    if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                        self.entry_price = None
                     if self.visualizer:
                         self.visualizer.add_sell(msk_time)
                 elif price_change <= -self.stop_loss:
-                    # Stop-loss
+                    # Stop-loss (убыток перекрыть не получится, но фиксируем)
                     order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
                                             direction=OrderDirection.ORDER_DIRECTION_SELL)
-                    self.entry_price = None
+                    if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                        self.entry_price = None
                     if self.visualizer:
                         self.visualizer.add_sell(msk_time)
         if self.visualizer:
@@ -313,7 +368,11 @@ class RSIStrategy(TradeStrategyBase):
         min_range: float = 0.001,
         take_profit: float = 0.01,   # 1% профит
         stop_loss: float = 0.005,    # 0.5% убыток
-        visualizer: Visualizer = None
+        visualizer: Visualizer = None,
+        rsi_drop_period: int = 3,    # период для фильтра по падению RSI
+        rsi_drop_threshold: float = 20.0,  # на сколько пунктов должен упасть RSI
+        min_period: int = 10,        # период для поиска локального минимума
+        trailing_stop: float = 0.01  # trailing stop (например, 1%)
     ):
         self.rsi_len = rsi_len
         self.trade_count = trade_count
@@ -323,12 +382,40 @@ class RSIStrategy(TradeStrategyBase):
         self.visualizer = visualizer
         self.prices = []
         self.entry_price = None  # Цена входа для take-profit/stop-loss
+        self.rsi_drop_period = rsi_drop_period
+        self.rsi_drop_threshold = rsi_drop_threshold
+        self.min_period = min_period
+        self.trailing_stop = trailing_stop
+        self.trailing_stop_price = None  # trailing-stop-цена (максимум после входа)
 
     def load_candles(self, candles: list[HistoricCandle]) -> None:
-        self.prices = [float(candle.close.units + candle.close.nano / 1e9) for candle in candles[-self.rsi_len-1:]]
+        self.prices = [float(candle.close.units + candle.close.nano / 1e9) for candle in candles[-max(self.rsi_len+1, 50):]]
 
     def decide(self, market_data: MarketDataResponse, params: TradeStrategyParams) -> StrategyDecision:
-        return self.decide_by_candle(market_data.candle, params)
+        result = self.decide_by_candle(market_data.candle, params)
+        if result is None:
+            return StrategyDecision()
+        return result
+
+    def _calc_rsi(self, prices: list[float]) -> float:
+        # RSI (Relative Strength Index) calculation
+        if len(prices) < 2:
+            return 50.0
+        gains = []
+        losses = []
+        for i in range(1, len(prices)):
+            diff = prices[i] - prices[i - 1]
+            if diff > 0:
+                gains.append(diff)
+            else:
+                losses.append(-diff)
+        avg_gain = sum(gains) / len(prices) if gains else 0
+        avg_loss = sum(losses) / len(prices) if losses else 0
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
 
     def decide_by_candle(self, candle: Candle | HistoricCandle, params: TradeStrategyParams) -> StrategyDecision:
         import pytz
@@ -336,13 +423,14 @@ class RSIStrategy(TradeStrategyBase):
         msk_time = candle.time.astimezone(msk)
         price = float(candle.close.units + candle.close.nano / 1e9)
         self.prices.append(price)
-        if len(self.prices) > self.rsi_len + 1:
+        if len(self.prices) > max(self.rsi_len + 1, 50):
             self.prices.pop(0)
         order = None
-        if len(self.prices) == self.rsi_len + 1:
+        # --- УПРОЩЁННАЯ ЛОГИКА: только take-profit/stop-loss, без сложных фильтров ---
+        if len(self.prices) >= self.rsi_len + 1:
             # Фильтр по волатильности: не торгуем, если диапазон слишком мал
-            max_price = max(self.prices)
-            min_price = min(self.prices)
+            max_price = max(self.prices[-self.rsi_len-1:])
+            min_price = min(self.prices[-self.rsi_len-1:])
             if (max_price - min_price) / price < self.min_range:
                 if self.visualizer:
                     self.visualizer.add_candle(
@@ -354,10 +442,17 @@ class RSIStrategy(TradeStrategyBase):
                     )
                     self.visualizer.update_plot()
                 return StrategyDecision(robot_trade_order=None)
-            rsi = self._calc_rsi(self.prices)
-            # Покупка по RSI < 25, если нет позиции
-            if rsi < 25 and params.instrument_balance == 0:
-                lot_price = price * self.instrument_info.lot
+            rsi = self._calc_rsi(self.prices[-self.rsi_len-1:])
+            # Комиссия Тинькофф 0.05% за сделку, минимум 0.01 руб. (двойная комиссия: покупка+продажа)
+            commission_rate = 0.0005
+            commission_min = 0.01
+            lot_price = price * self.instrument_info.lot
+            min_commission_rel = 0
+            if self.entry_price:
+                min_commission = max(lot_price * commission_rate, commission_min) * 2
+                min_commission_rel = min_commission / (self.entry_price * self.instrument_info.lot)
+            # Покупка по RSI < 25, если нет позиции и не было продажи только что
+            if rsi < 25 and params.instrument_balance == 0 and self.entry_price is None:
                 lots_available = int(params.currency_balance / lot_price)
                 if lots_available > 0:
                     order = RobotTradeOrder(quantity=min(self.trade_count, lots_available),
@@ -365,55 +460,83 @@ class RSIStrategy(TradeStrategyBase):
                     self.entry_price = price  # Запоминаем цену входа
                     if self.visualizer:
                         self.visualizer.add_buy(msk_time)
-            # Продажа по RSI > 75, если есть позиция
-            elif rsi > 75 and params.instrument_balance > 0:
-                order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
-                                        direction=OrderDirection.ORDER_DIRECTION_SELL)
-                self.entry_price = None  # Сбросить цену входа
-                if self.visualizer:
-                    self.visualizer.add_sell(msk_time)
+            # Продажа по RSI > 75, если есть позиция и цена ниже MA(20)
+            elif rsi > 75 and params.instrument_balance > 0 and self.entry_price is not None:
+                ma_period = 20
+                if len(self.prices) >= ma_period:
+                    ma = sum(self.prices[-ma_period:]) / ma_period
+                else:
+                    ma = sum(self.prices) / len(self.prices)
+                # Продаём только если цена ниже MA (подтверждение разворота) и есть прибыль
+                price_change = (price - self.entry_price) / self.entry_price
+                if price < ma and price_change >= max(self.take_profit, min_commission_rel):
+                    order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
+                                            direction=OrderDirection.ORDER_DIRECTION_SELL)
+                    # Сбрасываем entry_price только если позиция полностью закрыта
+                    if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                        self.entry_price = None
+                    if self.visualizer:
+                        self.visualizer.add_sell(msk_time)
             # Take-profit/Stop-loss: если есть позиция и цена ушла достаточно далеко
+            # Take-profit/Stop-loss/Trailing-stop: если есть позиция и цена ушла достаточно далеко
             elif params.instrument_balance > 0 and self.entry_price is not None:
                 price_change = (price - self.entry_price) / self.entry_price
-                if price_change >= self.take_profit:
+
+                # --- Trailing-stop: подтягиваем trailing_stop_price вверх при росте цены ---
+                if self.trailing_stop_price is None or price > self.trailing_stop_price:
+                    self.trailing_stop_price = price
+
+                # --- Сложный фильтр: пробой локального минимума за N свечей, если есть прибыль ---
+                if len(self.prices) >= self.min_period:
+                    local_min = min(self.prices[-self.min_period:-1])
+                    if price < local_min and price_change > min_commission_rel:
+                        order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
+                                                direction=OrderDirection.ORDER_DIRECTION_SELL)
+                        if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                            self.entry_price = None
+                            self.trailing_stop_price = None
+                        if self.visualizer:
+                            self.visualizer.add_sell(msk_time)
+
+                # --- Фильтр по резкому падению RSI ---
+                if len(self.prices) >= self.rsi_len + self.rsi_drop_period:
+                    rsi_now = self._calc_rsi(self.prices[-self.rsi_len-1:])
+                    rsi_prev = self._calc_rsi(self.prices[-self.rsi_len-self.rsi_drop_period-1:-self.rsi_drop_period])
+                    # Если RSI упал на rsi_drop_threshold пунктов за rsi_drop_period свечей и есть прибыль — продаём
+                    if (rsi_prev - rsi_now) >= self.rsi_drop_threshold and price_change > min_commission_rel:
+                        order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
+                                                direction=OrderDirection.ORDER_DIRECTION_SELL)
+                        if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                            self.entry_price = None
+                            self.trailing_stop_price = None
+                        if self.visualizer:
+                            self.visualizer.add_sell(msk_time)
+
+                # --- Trailing-stop: если цена упала от максимума больше чем на trailing_stop ---
+                if self.trailing_stop_price is not None and price < self.trailing_stop_price * (1 - self.trailing_stop):
+                    order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
+                                            direction=OrderDirection.ORDER_DIRECTION_SELL)
+                    if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                        self.entry_price = None
+                        self.trailing_stop_price = None
+                    if self.visualizer:
+                        self.visualizer.add_sell(msk_time)
+                # Продаём только если take_profit перекрывает комиссию
+                elif price_change >= max(self.take_profit, min_commission_rel):
                     # Take-profit
                     order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
                                             direction=OrderDirection.ORDER_DIRECTION_SELL)
-                    self.entry_price = None
+                    if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                        self.entry_price = None
+                        self.trailing_stop_price = None
                     if self.visualizer:
                         self.visualizer.add_sell(msk_time)
                 elif price_change <= -self.stop_loss:
-                    # Stop-loss
+                    # Stop-loss (убыток перекрыть не получится, но фиксируем)
                     order = RobotTradeOrder(quantity=min(self.trade_count, params.instrument_balance),
                                             direction=OrderDirection.ORDER_DIRECTION_SELL)
-                    self.entry_price = None
+                    if params.instrument_balance - min(self.trade_count, params.instrument_balance) == 0:
+                        self.entry_price = None
+                        self.trailing_stop_price = None
                     if self.visualizer:
                         self.visualizer.add_sell(msk_time)
-        if self.visualizer:
-            self.visualizer.add_candle(
-                msk_time,
-                float(candle.open.units + candle.open.nano / 1e9),
-                float(candle.high.units + candle.high.nano / 1e9),
-                float(candle.low.units + candle.low.nano / 1e9),
-                float(candle.close.units + candle.close.nano / 1e9)
-            )
-            self.visualizer.update_plot()
-        return StrategyDecision(robot_trade_order=order)
-
-    def _calc_rsi(self, prices: list[float]) -> float:
-        gains = []
-        losses = []
-        for i in range(1, len(prices)):
-            diff = prices[i] - prices[i-1]
-            if diff > 0:
-                gains.append(diff)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(-diff)
-        avg_gain = sum(gains[-self.rsi_len:]) / self.rsi_len
-        avg_loss = sum(losses[-self.rsi_len:]) / self.rsi_len
-        if avg_loss == 0:
-            return 100.0
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))

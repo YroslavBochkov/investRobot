@@ -26,9 +26,43 @@ def print_stats(stats_path, label):
     print(f"💸 Всего потрачено на комиссию: {commission:.2f} руб.")
 
 def main():
-    print_stats('/Users/yaroslav/Петпроект/investRobot/stats.pickle', 'SBER')
-    print_stats('/Users/yaroslav/Петпроект/investRobot/stats_tcsg.pickle', 'Тинькофф Инвестиции (T)')
+    tickers = [
+        ('MTSS', 'МТС'),
+        ('MOEX', 'Мосбиржа'),
+        ('VKCO', 'ВКонтакте'),
+        ('OZON', 'Озон'),
+        ('SBER', 'Сбербанк'),
+        ('GAZP', 'Газпром'),
+        ('LKOH', 'Лукойл'),
+        ('GMKN', 'Норникель'),
+        ('NVTK', 'Новатэк'),
+        ('PLZL', 'Полюс'),
+        ('ROSN', 'Роснефть'),
+        ('TATN', 'Татнефть'),
+        ('CHMF', 'Северсталь'),
+    ]
+    open_positions = []
+    for ticker, label in tickers:
+        stats_path = f'/Users/yaroslav/Петпроект/investRobot/stats_{ticker}.pickle'
+        try:
+            from robotlib.stats import TradeStatisticsAnalyzer, BalanceProcessor, BalanceCalculator
+            stats = TradeStatisticsAnalyzer.load_from_file(stats_path)
+            short, _ = stats.get_report(processors=[BalanceProcessor()], calculators=[BalanceCalculator()])
+            if short.get('final_instrument_balance', 0) > 0:
+                open_positions.append((label, short['final_instrument_balance']))
+        except Exception:
+            continue
 
+    print("Открытые позиции:")
+    if open_positions:
+        for label, lots in open_positions:
+            print(f"- {label}: {lots} лот(ов)")
+    else:
+        print("Нет открытых позиций.")
+
+    # Старый вывод полной статистики
+    for ticker, label in tickers:
+        print_stats(f'/Users/yaroslav/Петпроект/investRobot/stats_{ticker}.pickle', label)
 
 if __name__ == '__main__':
     main()

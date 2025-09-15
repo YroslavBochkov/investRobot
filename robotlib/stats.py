@@ -68,6 +68,13 @@ class TradeStatisticsAnalyzer:
     def save_to_file(self, filename: str) -> None:
         import os
         os.makedirs(os.path.dirname(filename), exist_ok=True)
+        # Исправление: конвертируем все repeated message fields (например, stages) в list
+        for trade in self.trades.values():
+            if hasattr(trade, "stages") and not isinstance(trade.stages, list):
+                try:
+                    trade.stages = list(trade.stages)
+                except Exception:
+                    trade.stages = []
         with open(filename, 'wb') as file:
             pickle.dump(obj=self, file=file, protocol=pickle.HIGHEST_PROTOCOL)
 

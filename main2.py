@@ -44,11 +44,11 @@ def main():
         pass
 
     strategy = RSIStrategy(
-        rsi_len=28,
-        trade_count=2,  # Можно увеличить, если хотите больше объёма
-        min_range=0.002,
-        take_profit=0.01,
-        stop_loss=0.005,
+        rsi_len=21,              # Более короткий RSI для чуть более частых, но не слишком частых сигналов
+        trade_count=2,           # Можно увеличить, если хватает баланса
+        min_range=0.0015,        # Оставить не слишком маленьким, чтобы не ловить "пилу"
+        take_profit=0.012,       # Чуть больше профит, чтобы сделки были реже и прибыльнее
+        stop_loss=0.006,         # Чуть больше стоп-лосс, чтобы не выбивало по шуму
         # visualizer=Visualizer('T', 'RUB')
     )
     if entry_price is not None:

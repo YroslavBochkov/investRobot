@@ -64,7 +64,7 @@ class TradingRobot:  # pylint:disable=too-many-instance-attributes
         self.instrument_info = instrument_info
         self.sandbox_mode = sandbox_mode
 
-    def trade(self) -> TradeStatisticsAnalyzer:
+    def trade(self, stop_event=None) -> TradeStatisticsAnalyzer:
         self.logger.info('Starting trading')
 
         self.trade_strategy.load_candles(
@@ -99,12 +99,37 @@ class TradingRobot:  # pylint:disable=too-many-instance-attributes
                               f'interval: {self.trade_strategy.candle_subscription_interval}')
             try:
                 for market_data in market_data_stream:
+                    # Проверяем флаг остановки
+                    if stop_event is not None and stop_event.is_set():
+                        self.logger.info('Получен сигнал остановки, завершаем торговлю.')
+                        break
                     self.logger.debug(f'Received market_data {market_data}')
                     if market_data.candle:
                         self._on_update(client, market_data)
                     if market_data.trading_status and not market_data.trading_status.market_order_available_flag:
-                        self.logger.info(f'Trading is limited. Current status: {market_data.trading_status}')
-                        break
+                        import time
+                        import pytz
+                        msk = pytz.timezone('Europe/Moscow')
+                        now = datetime.datetime.now(msk)
+                        # Определяем ближайшее время возобновления торгов
+                        # Основная сессия: 10:00-18:45, вечерняя: 19:05-23:50
+                        # Премаркет: 9:50-10:00, постмаркет: 18:40-18:50, аукционы: 19:00-19:05
+                        # Если сейчас до 10:00 — ждём до 10:00
+                        if now.time() < datetime.time(10, 0):
+                            next_open = now.replace(hour=10, minute=0, second=0, microsecond=0)
+                        # Если сейчас между 18:45 и 19:05 — ждём до 19:05
+                        elif datetime.time(18, 45) <= now.time() < datetime.time(19, 5):
+                            next_open = now.replace(hour=19, minute=5, second=0, microsecond=0)
+                        # Если сейчас после 23:50 — ждём до 10:00 следующего дня
+                        elif now.time() >= datetime.time(23, 50):
+                            next_open = (now + datetime.timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+                        # Если сейчас между 10:00 и 18:45 или 19:05 и 23:50 — значит, временный перерыв, ждём 1 минуту
+                        else:
+                            next_open = now + datetime.timedelta(minutes=1)
+                        wait_seconds = max(1, int((next_open - now).total_seconds()))
+                        self.logger.info(f"Торговля недоступна. Ждём до {next_open.strftime('%H:%M:%S')} (МСК), {wait_seconds//60} мин.")
+                        time.sleep(wait_seconds)
+                        continue
             except InvestError as error:
                 self.logger.info(f'Caught exception {error}, stopping trading')
                 market_data_stream.stop()
